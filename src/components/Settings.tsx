@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Save, Trash2, Plus, Eye, EyeOff, CheckCircle, XCircle } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Save, Trash2, Plus, Eye, EyeOff, CheckCircle, XCircle, Download, Upload } from 'lucide-react';
 import { verifyToken } from '../api/github';
 import { clearAllData } from '../db';
 
@@ -182,6 +182,79 @@ export function Settings() {
       await clearAllData();
       alert('Cache cleared successfully.');
     }
+  };
+
+  const handleExportSettings = () => {
+    const exportData = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      settings: {
+        // Note: PAT is excluded for security
+        repositories,
+        teamMembers,
+        aors,
+        lookbackDays,
+      },
+    };
+    
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vantage-settings-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleImportSettings = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const content = e.target?.result as string;
+        const importData = JSON.parse(content);
+
+        if (!importData.settings) {
+          alert('Invalid settings file: missing settings object');
+          return;
+        }
+
+        const { settings } = importData;
+
+        // Validate and import each setting
+        if (Array.isArray(settings.repositories)) {
+          setRepositories(settings.repositories);
+        }
+        if (Array.isArray(settings.teamMembers)) {
+          setTeamMembers(settings.teamMembers);
+        }
+        if (Array.isArray(settings.aors)) {
+          setAors(settings.aors);
+        }
+        if (typeof settings.lookbackDays === 'number') {
+          setLookbackDays(settings.lookbackDays);
+        }
+
+        alert('Settings imported successfully! Click Save to persist them.');
+      } catch (error) {
+        alert('Failed to import settings: Invalid JSON file');
+        console.error('Import error:', error);
+      }
+    };
+    reader.readAsText(file);
+
+    // Reset file input so same file can be imported again
+    event.target.value = '';
   };
 
   return (
@@ -429,21 +502,46 @@ export function Settings() {
 
       {/* Actions */}
       <div className="flex items-center justify-between">
-        <button
-          onClick={handleClearCache}
-          className="px-4 py-2 bg-red-900/50 hover:bg-red-900 text-red-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-        >
-          <Trash2 size={16} />
-          Clear Cache
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleClearCache}
+            className="px-4 py-2 bg-red-900/50 hover:bg-red-900 text-red-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <Trash2 size={16} />
+            Clear Cache
+          </button>
+        </div>
 
-        <button
-          onClick={handleSave}
-          className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-        >
-          <Save size={16} />
-          {saved ? 'Saved!' : 'Save Settings'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleExportSettings}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <Download size={16} />
+            Export
+          </button>
+          <button
+            onClick={handleImportClick}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <Upload size={16} />
+            Import
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            onChange={handleImportSettings}
+            className="hidden"
+          />
+          <button
+            onClick={handleSave}
+            className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <Save size={16} />
+            {saved ? 'Saved!' : 'Save Settings'}
+          </button>
+        </div>
       </div>
     </div>
   );
