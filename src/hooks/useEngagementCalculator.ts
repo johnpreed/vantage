@@ -598,3 +598,340 @@ export function useBatchIssueEffort(
     return result;
   }, [issueIds.join(','), teamMembers.join(','), comments, prActivities, issues]);
 }
+
+// ============================================================================
+// Team-Level Issue Effort (counts each member's contribution separately)
+// ============================================================================
+
+export interface IssueTeamEffort {
+  issueId: number;
+  issueNumber: number;
+  repository: string;
+  title: string;
+  state: 'OPEN' | 'CLOSED';
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+  commenterDays: number;   // Sum of unique (member, date) pairs for comments
+  authorDays: number;      // Sum of unique (member, date) pairs for commits on own PRs
+  reviewerDays: number;    // Sum of unique (member, date) pairs for reviews on others' PRs
+  totalEffortDays: number; // Sum of all effort days
+  contributors: string[];  // List of team members who contributed
+}
+
+/**
+ * Hook to calculate team-level effort for all issues
+ * Each team member's days are counted separately (not deduplicated across members)
+ */
+export function useAllIssuesTeamEffort(
+  teamMembers: string[]
+): IssueTeamEffort[] {
+  const comments = useLiveQuery(() => db.comments.toArray(), []);
+  const prActivities = useLiveQuery(() => db.prActivity.toArray(), []);
+  const issues = useLiveQuery(() => db.issues.toArray(), []);
+
+  return useMemo(() => {
+    if (!comments || !prActivities || !issues || issues.length === 0) {
+      return [];
+    }
+
+    const teamMemberSet = new Set(teamMembers);
+    
+    // Build PR author map (PR ID -> author)
+    const prAuthorMap = new Map<number, string>();
+    for (const issue of issues) {
+      for (const pr of issue.linkedPRs) {
+        prAuthorMap.set(pr.id, pr.author);
+      }
+    }
+
+    // Pre-group comments by issue
+    const commentsByIssue = new Map<number, Comment[]>();
+    for (const comment of comments) {
+      if (!teamMemberSet.has(comment.author)) continue;
+      if (!commentsByIssue.has(comment.issueId)) {
+        commentsByIssue.set(comment.issueId, []);
+      }
+      commentsByIssue.get(comment.issueId)!.push(comment);
+    }
+
+    // Build PR to issue mapping
+    const prToIssues = new Map<number, number[]>();
+    for (const issue of issues) {
+      for (const pr of issue.linkedPRs) {
+        if (!prToIssues.has(pr.id)) {
+          prToIssues.set(pr.id, []);
+        }
+        prToIssues.get(pr.id)!.push(issue.id);
+      }
+    }
+
+    // Group PR activities by issue
+    const prActivityByIssue = new Map<number, PRActivity[]>();
+    for (const activity of prActivities) {
+      if (!teamMemberSet.has(activity.author)) continue;
+      const linkedIssueIds = prToIssues.get(activity.prId) || [];
+      for (const issueId of linkedIssueIds) {
+        if (!prActivityByIssue.has(issueId)) {
+          prActivityByIssue.set(issueId, []);
+        }
+        prActivityByIssue.get(issueId)!.push(activity);
+      }
+    }
+
+    // Calculate effort for each issue
+    const results: IssueTeamEffort[] = [];
+    
+    for (const issue of issues) {
+      const issueComments = commentsByIssue.get(issue.id) || [];
+      const issuePRActivities = prActivityByIssue.get(issue.id) || [];
+      
+      // Build set of (member, date) pairs for commenter days
+      const commenterPairs = new Set<string>();
+      for (const comment of issueComments) {
+        const dateKey = toUtcDateKey(comment.createdAt);
+        commenterPairs.add(`${comment.author}|${dateKey}`);
+      }
+      
+      // Build sets for author and reviewer days
+      const authorPairs = new Set<string>();
+      const reviewerPairs = new Set<string>();
+      const contributors = new Set<string>();
+      
+      for (const activity of issuePRActivities) {
+        const dateKey = toUtcDateKey(activity.createdAt);
+        const prAuthor = prAuthorMap.get(activity.prId);
+        
+        if (activity.type === 'commit' && prAuthor === activity.author) {
+          // Author activity: commit on a PR they authored
+          authorPairs.add(`${activity.author}|${dateKey}`);
+        } else if ((activity.type === 'review' || activity.type === 'review_comment') && prAuthor !== activity.author) {
+          // Reviewer activity: review on a PR authored by someone else
+          reviewerPairs.add(`${activity.author}|${dateKey}`);
+        }
+        
+        contributors.add(activity.author);
+      }
+      
+      // Add commenters to contributors
+      for (const comment of issueComments) {
+        contributors.add(comment.author);
+      }
+      
+      const commenterDays = commenterPairs.size;
+      const authorDays = authorPairs.size;
+      const reviewerDays = reviewerPairs.size;
+      const totalEffortDays = commenterDays + authorDays + reviewerDays;
+      
+      // Only include issues with some team activity
+      if (totalEffortDays > 0) {
+        results.push({
+          issueId: issue.id,
+          issueNumber: issue.number,
+          repository: issue.repository,
+          title: issue.title,
+          state: issue.state,
+          url: issue.url,
+          createdAt: issue.createdAt,
+          updatedAt: issue.updatedAt,
+          closedAt: issue.closedAt,
+          commenterDays,
+          authorDays,
+          reviewerDays,
+          totalEffortDays,
+          contributors: Array.from(contributors).sort(),
+        });
+      }
+    }
+
+    // Sort by total effort descending
+    results.sort((a, b) => b.totalEffortDays - a.totalEffortDays);
+    
+    return results;
+  }, [teamMembers.join(','), comments, prActivities, issues]);
+}
+
+// ============================================================================
+// Per-Member Issue Breakdown
+// ============================================================================
+
+export interface PRLink {
+  number: number;
+  url: string;
+}
+
+export interface DateActivity {
+  date: string;
+  commentUrl?: string;  // URL to last comment on this date
+  prLinks: PRLink[];    // PRs involved on this date (for author/reviewer)
+}
+
+export interface MemberIssueContribution {
+  username: string;
+  commenterDays: number;
+  authorDays: number;
+  reviewerDays: number;
+  totalDays: number;
+  // Detailed activity with links
+  commentActivity: DateActivity[];
+  authorActivity: DateActivity[];
+  reviewerActivity: DateActivity[];
+}
+
+/**
+ * Hook to get per-member breakdown for a specific issue
+ */
+export function useIssueMemberBreakdown(
+  issueId: number | null,
+  teamMembers: string[]
+): MemberIssueContribution[] {
+  const comments = useLiveQuery(() => db.comments.toArray(), []);
+  const prActivities = useLiveQuery(() => db.prActivity.toArray(), []);
+  const issue = useLiveQuery(
+    () => issueId ? db.issues.get(issueId) : undefined,
+    [issueId]
+  );
+
+  return useMemo(() => {
+    if (!issueId || !comments || !prActivities || !issue) {
+      return [];
+    }
+
+    const teamMemberSet = new Set(teamMembers);
+    
+    // Build PR maps for this issue's linked PRs
+    const prAuthorMap = new Map<number, string>();
+    const prInfoMap = new Map<number, PRLink>();
+    for (const pr of issue.linkedPRs) {
+      prAuthorMap.set(pr.id, pr.author);
+      prInfoMap.set(pr.id, { number: pr.number, url: pr.url });
+    }
+    const linkedPRIds = new Set(issue.linkedPRs.map(pr => pr.id));
+
+    // Filter comments for this issue by team members
+    const issueComments = comments.filter(
+      c => c.issueId === issueId && teamMemberSet.has(c.author)
+    );
+
+    // Filter PR activities for this issue's linked PRs by team members
+    const issuePRActivities = prActivities.filter(
+      a => linkedPRIds.has(a.prId) && teamMemberSet.has(a.author)
+    );
+
+    // Build per-member contributions with detailed link info
+    const memberContributions = new Map<string, {
+      commentsByDate: Map<string, { lastCommentId: number; lastCommentTime: string }>;
+      authorByDate: Map<string, Set<number>>;  // date -> Set of prIds
+      reviewerByDate: Map<string, Set<number>>; // date -> Set of prIds
+    }>();
+
+    // Process comments - track last comment per date
+    for (const comment of issueComments) {
+      if (!memberContributions.has(comment.author)) {
+        memberContributions.set(comment.author, {
+          commentsByDate: new Map(),
+          authorByDate: new Map(),
+          reviewerByDate: new Map(),
+        });
+      }
+      const dateKey = toUtcDateKey(comment.createdAt);
+      const contrib = memberContributions.get(comment.author)!;
+      
+      const existing = contrib.commentsByDate.get(dateKey);
+      if (!existing || comment.createdAt > existing.lastCommentTime) {
+        contrib.commentsByDate.set(dateKey, {
+          lastCommentId: comment.id,
+          lastCommentTime: comment.createdAt,
+        });
+      }
+    }
+
+    // Process PR activities
+    for (const activity of issuePRActivities) {
+      if (!memberContributions.has(activity.author)) {
+        memberContributions.set(activity.author, {
+          commentsByDate: new Map(),
+          authorByDate: new Map(),
+          reviewerByDate: new Map(),
+        });
+      }
+      
+      const dateKey = toUtcDateKey(activity.createdAt);
+      const prAuthor = prAuthorMap.get(activity.prId);
+      const contrib = memberContributions.get(activity.author)!;
+      
+      if (activity.type === 'commit' && prAuthor === activity.author) {
+        // Author activity: commit on a PR they authored
+        if (!contrib.authorByDate.has(dateKey)) {
+          contrib.authorByDate.set(dateKey, new Set());
+        }
+        contrib.authorByDate.get(dateKey)!.add(activity.prId);
+      } else if ((activity.type === 'review' || activity.type === 'review_comment') && prAuthor !== activity.author) {
+        // Reviewer activity: review on a PR authored by someone else
+        if (!contrib.reviewerByDate.has(dateKey)) {
+          contrib.reviewerByDate.set(dateKey, new Set());
+        }
+        contrib.reviewerByDate.get(dateKey)!.add(activity.prId);
+      }
+    }
+
+    // Convert to array with proper link structures
+    const results: MemberIssueContribution[] = [];
+    for (const [username, contrib] of memberContributions) {
+      const commenterDays = contrib.commentsByDate.size;
+      const authorDays = contrib.authorByDate.size;
+      const reviewerDays = contrib.reviewerByDate.size;
+      const totalDays = commenterDays + authorDays + reviewerDays;
+
+      if (totalDays > 0) {
+        // Build comment activity with URLs
+        const commentActivity: DateActivity[] = Array.from(contrib.commentsByDate.entries())
+          .map(([date, info]) => ({
+            date,
+            commentUrl: `${issue.url}#issuecomment-${info.lastCommentId}`,
+            prLinks: [],
+          }))
+          .sort((a, b) => b.date.localeCompare(a.date));
+
+        // Build author activity with PR links
+        const authorActivity: DateActivity[] = Array.from(contrib.authorByDate.entries())
+          .map(([date, prIds]) => ({
+            date,
+            prLinks: Array.from(prIds)
+              .map(prId => prInfoMap.get(prId)!)
+              .filter(Boolean)
+              .sort((a, b) => a.number - b.number),
+          }))
+          .sort((a, b) => b.date.localeCompare(a.date));
+
+        // Build reviewer activity with PR links
+        const reviewerActivity: DateActivity[] = Array.from(contrib.reviewerByDate.entries())
+          .map(([date, prIds]) => ({
+            date,
+            prLinks: Array.from(prIds)
+              .map(prId => prInfoMap.get(prId)!)
+              .filter(Boolean)
+              .sort((a, b) => a.number - b.number),
+          }))
+          .sort((a, b) => b.date.localeCompare(a.date));
+
+        results.push({
+          username,
+          commenterDays,
+          authorDays,
+          reviewerDays,
+          totalDays,
+          commentActivity,
+          authorActivity,
+          reviewerActivity,
+        });
+      }
+    }
+
+    // Sort by total days descending
+    results.sort((a, b) => b.totalDays - a.totalDays);
+    
+    return results;
+  }, [issueId, teamMembers.join(','), comments, prActivities, issue]);
+}

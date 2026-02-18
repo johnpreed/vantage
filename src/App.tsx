@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { Layout, type TabId } from './components/Layout';
 import { OpenIssuesView } from './components/OpenIssuesView';
+import { IssuesView } from './components/IssuesView';
 import { TeamView } from './components/TeamView';
 import { Settings, getSettings } from './components/Settings';
 import { syncAllRepositories, parseSearchQuery } from './api/github';
@@ -63,6 +64,8 @@ function App() {
     switch (activeTab) {
       case 'focus':
         return <OpenIssuesView />;
+      case 'issues':
+        return <IssuesView />;
       case 'team':
         return <TeamView />;
       case 'settings':

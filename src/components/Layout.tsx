@@ -5,10 +5,11 @@ import {
   Settings, 
   Database,
   Search,
-  RefreshCw
+  RefreshCw,
+  FileText
 } from 'lucide-react';
 
-export type TabId = 'focus' | 'team' | 'settings';
+export type TabId = 'focus' | 'issues' | 'team' | 'settings';
 
 interface Tab {
   id: TabId;
@@ -18,6 +19,7 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'focus', label: 'Open Issues', icon: <Focus size={18} /> },
+  { id: 'issues', label: 'All Issues', icon: <FileText size={18} /> },
   { id: 'team', label: 'Team View', icon: <Users size={18} /> },
   { id: 'settings', label: 'Settings', icon: <Settings size={18} /> },
 ];
