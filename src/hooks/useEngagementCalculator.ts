@@ -14,12 +14,21 @@ export interface EngagementMetrics {
   devDayCredits: number;      // Context-adjusted development day credits
 }
 
+export interface ActivityDetail {
+  date: string;           // UTC date key (YYYY-MM-DD)
+  commentCount: number;   // Number of comments on this date
+  prActivityCount: number;// Number of PR activities on this date
+}
+
 export interface IssueEngagement {
   issueId: number;
   commDays: number;
   devDays: number;
   commDayCredits: number;  // With context switch factor applied
   devDayCredits: number;   // With context switch factor applied
+  activityDetails: ActivityDetail[];  // Per-date breakdown
+  totalComments: number;   // Total comments on this issue
+  totalPRActivities: number; // Total PR activities on this issue
 }
 
 export interface TeamMemberEngagement {
@@ -134,12 +143,32 @@ export function calculateIssueEngagement(
     devDayCredits += numPRs > 0 ? 1 / numPRs : 0;
   }
 
+  // Build per-date activity details
+  const allDates = new Set<string>();
+  for (const c of userIssueComments) {
+    allDates.add(toUtcDateKey(c.createdAt));
+  }
+  for (const a of userIssuePRActivities) {
+    allDates.add(toUtcDateKey(a.createdAt));
+  }
+
+  const activityDetails: ActivityDetail[] = Array.from(allDates)
+    .sort((a, b) => b.localeCompare(a)) // Most recent first
+    .map(dateKey => ({
+      date: dateKey,
+      commentCount: userIssueComments.filter(c => toUtcDateKey(c.createdAt) === dateKey).length,
+      prActivityCount: userIssuePRActivities.filter(a => toUtcDateKey(a.createdAt) === dateKey).length,
+    }));
+
   return {
     issueId,
     commDays,
     devDays,
     commDayCredits,
     devDayCredits,
+    activityDetails,
+    totalComments: userIssueComments.length,
+    totalPRActivities: userIssuePRActivities.length,
   };
 }
 

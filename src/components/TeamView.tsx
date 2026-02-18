@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { MessageSquare, CheckCircle, GitPullRequest, AlertTriangle, ExternalLink, User, Clock, Target, HelpCircle, CircleDot, Activity, Calendar } from 'lucide-react';
+import { MessageSquare, CheckCircle, GitPullRequest, AlertTriangle, ExternalLink, User, Clock, Target, HelpCircle, CircleDot, Activity, Calendar, ChevronDown, ChevronRight } from 'lucide-react';
 import { db, getTeamMemberStats, getMemberEngagedIssues, calculateAorExpertise, getBatchIssueStatus, type Issue, type IssueStatus } from '../db';
 import { getSettings, type AreaOfResponsibility } from './Settings';
 import { useTeamEngagement, type TeamMemberEngagement } from '../hooks/useEngagementCalculator';
@@ -763,6 +763,32 @@ interface EffortSummaryTabProps {
 }
 
 function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
+  const [issueDetails, setIssueDetails] = useState<Map<number, Issue>>(new Map());
+  const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
+  const [loadingIssues, setLoadingIssues] = useState(true);
+
+  // Fetch issue details for the engagement data
+  useEffect(() => {
+    if (!engagement) return;
+    
+    const issueIds = Array.from(engagement.issueEngagements.keys());
+    if (issueIds.length === 0) {
+      setLoadingIssues(false);
+      return;
+    }
+
+    db.issues.where('id').anyOf(issueIds).toArray()
+      .then(issues => {
+        const detailsMap = new Map(issues.map(i => [i.id, i]));
+        setIssueDetails(detailsMap);
+        setLoadingIssues(false);
+      })
+      .catch(err => {
+        console.error('Failed to fetch issue details:', err);
+        setLoadingIssues(false);
+      });
+  }, [engagement]);
+
   if (!engagement) {
     return (
       <div className="p-8 text-center text-gray-500">
@@ -773,6 +799,10 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
 
   const totalDays = engagement.commDays + engagement.devDays;
   const commPercent = totalDays > 0 ? (engagement.commDays / totalDays) * 100 : 50;
+
+  // Sort issues by total activity (commDays + devDays) descending
+  const sortedIssueEngagements = Array.from(engagement.issueEngagements.entries())
+    .sort((a, b) => (b[1].commDays + b[1].devDays) - (a[1].commDays + a[1].devDays));
 
   return (
     <div className="p-6 space-y-6">
@@ -847,6 +877,108 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
             <span>{Math.round(100 - commPercent)}%</span>
           </div>
         </div>
+      </div>
+
+      {/* Issue-Level Breakdown */}
+      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+        <h4 className="text-white font-medium mb-3">Issue-Level Activity Breakdown</h4>
+        {loadingIssues ? (
+          <div className="text-gray-500 text-center py-4">Loading issue details...</div>
+        ) : sortedIssueEngagements.length === 0 ? (
+          <div className="text-gray-500 text-center py-4">No issue activity found</div>
+        ) : (
+          <div className="space-y-2 max-h-96 overflow-y-auto">
+            {sortedIssueEngagements.map(([issueId, issueEngagement]) => {
+              const issue = issueDetails.get(issueId);
+              const isExpanded = expandedIssue === issueId;
+              
+              return (
+                <div key={issueId} className="bg-gray-700/50 rounded-lg border border-gray-600 overflow-hidden">
+                  {/* Issue Header */}
+                  <button
+                    onClick={() => setExpandedIssue(isExpanded ? null : issueId)}
+                    className="w-full px-3 py-2 flex items-center gap-3 hover:bg-gray-700 transition-colors"
+                  >
+                    {isExpanded ? (
+                      <ChevronDown size={16} className="text-gray-400 flex-shrink-0" />
+                    ) : (
+                      <ChevronRight size={16} className="text-gray-400 flex-shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0 text-left">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="text-gray-400 text-xs">#{issue?.number || issueId}</span>
+                        <span className="text-gray-600 text-xs">•</span>
+                        <span className="text-gray-500 text-xs truncate">{issue?.repository || 'Unknown'}</span>
+                        {issue && (
+                          <a
+                            href={issue.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-gray-500 hover:text-indigo-400 transition-colors"
+                          >
+                            <ExternalLink size={12} />
+                          </a>
+                        )}
+                      </div>
+                      <div className="text-white text-sm truncate">
+                        {issue?.title || `Issue #${issueId}`}
+                      </div>
+                    </div>
+                    {/* Summary badges */}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="px-2 py-0.5 rounded text-xs bg-blue-900/50 text-blue-400 border border-blue-800">
+                        {issueEngagement.commDays}d / {issueEngagement.totalComments}c
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-xs bg-green-900/50 text-green-400 border border-green-800">
+                        {issueEngagement.devDays}d / {issueEngagement.totalPRActivities}pr
+                      </span>
+                    </div>
+                  </button>
+                  
+                  {/* Expanded: Date-level breakdown */}
+                  {isExpanded && issueEngagement.activityDetails.length > 0 && (
+                    <div className="border-t border-gray-600 px-3 py-2 bg-gray-800/50">
+                      <div className="text-xs text-gray-400 mb-2 flex items-center gap-4">
+                        <span>Date</span>
+                        <span className="flex items-center gap-1">
+                          <div className="w-2 h-2 bg-blue-500 rounded" /> Comments
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <div className="w-2 h-2 bg-green-500 rounded" /> PR Activities
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        {issueEngagement.activityDetails.map(detail => (
+                          <div
+                            key={detail.date}
+                            className="flex items-center gap-4 text-sm py-1 px-2 rounded hover:bg-gray-700/50"
+                          >
+                            <span className="text-gray-300 font-mono text-xs w-24">
+                              {detail.date}
+                            </span>
+                            <div className="flex items-center gap-1 w-20">
+                              <MessageSquare size={12} className="text-blue-400" />
+                              <span className={detail.commentCount > 0 ? 'text-blue-400' : 'text-gray-600'}>
+                                {detail.commentCount}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1 w-20">
+                              <GitPullRequest size={12} className="text-green-400" />
+                              <span className={detail.prActivityCount > 0 ? 'text-green-400' : 'text-gray-600'}>
+                                {detail.prActivityCount}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Top AoRs */}
