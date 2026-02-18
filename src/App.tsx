@@ -45,6 +45,7 @@ function App() {
         settings.pat,
         settings.repositories,
         settings.teamMembers,
+        settings.lookbackDays,
         (message) => setSyncMessage(message),
         filter
       );

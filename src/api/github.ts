@@ -1,13 +1,13 @@
 import { 
   upsertIssues, 
   upsertComments, 
-  upsertPullRequests,
+  upsertPRActivity,
   updateSyncStatus,
   type Issue, 
   type Comment, 
   type Label, 
   type LinkedPR,
-  type PullRequest 
+  type PRActivity
 } from '../db';
 
 // ============================================================================
@@ -97,27 +97,6 @@ interface CommentsQueryResponse {
         body: string;
         createdAt: string;
         updatedAt: string;
-      }>;
-      pageInfo: PageInfo;
-    };
-  };
-}
-
-interface PRsQueryResponse {
-  repository: {
-    pullRequests: {
-      nodes: Array<{
-        id: string;
-        databaseId: number;
-        number: number;
-        title: string;
-        state: 'OPEN' | 'CLOSED' | 'MERGED';
-        url: string;
-        author: { login: string } | null;
-        createdAt: string;
-        updatedAt: string;
-        closedAt: string | null;
-        mergedAt: string | null;
       }>;
       pageInfo: PageInfo;
     };
@@ -240,37 +219,116 @@ query GetMoreComments($nodeId: ID!, $after: String!) {
 }
 `;
 
-const PRS_QUERY = `
-query GetPullRequests($owner: String!, $repo: String!, $after: String) {
-  repository(owner: $owner, name: $repo) {
-    pullRequests(
-      first: 50
-      after: $after
-      orderBy: { field: UPDATED_AT, direction: DESC }
-    ) {
-      pageInfo {
-        hasNextPage
-        endCursor
+// Query to fetch PR details by node ID (works for PRs in any repo)
+const PR_BY_ID_QUERY = `
+query GetPRById($nodeId: ID!) {
+  node(id: $nodeId) {
+    ... on PullRequest {
+      id
+      databaseId
+      number
+      title
+      state
+      url
+      author {
+        login
       }
-      nodes {
-        id
-        databaseId
-        number
-        title
-        state
-        url
-        author {
-          login
+      createdAt
+      updatedAt
+      closedAt
+      mergedAt
+      repository {
+        nameWithOwner
+      }
+      commits(first: 100) {
+        nodes {
+          commit {
+            oid
+            author {
+              user {
+                login
+              }
+            }
+            committedDate
+          }
         }
-        createdAt
-        updatedAt
-        closedAt
-        mergedAt
+      }
+      reviews(first: 50) {
+        nodes {
+          id
+          author {
+            login
+          }
+          state
+          createdAt
+        }
+      }
+      reviewThreads(first: 50) {
+        nodes {
+          comments(first: 50) {
+            nodes {
+              id
+              author {
+                login
+              }
+              createdAt
+            }
+          }
+        }
       }
     }
   }
 }
 `;
+
+interface PRByIdResponse {
+  node: {
+    id: string;
+    databaseId: number;
+    number: number;
+    title: string;
+    state: 'OPEN' | 'CLOSED' | 'MERGED';
+    url: string;
+    author: { login: string } | null;
+    createdAt: string;
+    updatedAt: string;
+    closedAt: string | null;
+    mergedAt: string | null;
+    repository: {
+      nameWithOwner: string;
+    };
+    commits: {
+      nodes: Array<{
+        commit: {
+          oid: string;
+          author: {
+            user: { login: string } | null;
+          } | null;
+          committedDate: string;
+        };
+      }>;
+    };
+    reviews: {
+      nodes: Array<{
+        id: string;
+        author: { login: string } | null;
+        state: string;
+        createdAt: string;
+      }>;
+    };
+    reviewThreads: {
+      nodes: Array<{
+        comments: {
+          nodes: Array<{
+            id: string;
+            author: { login: string } | null;
+            createdAt: string;
+          }>;
+        };
+      }>;
+    };
+  } | null;
+}
 
 // ============================================================================
 // API Client
@@ -361,11 +419,11 @@ async function fetchAllComments(
 }
 
 /**
- * Get the six-month lookback date
+ * Get lookback date from configurable days
  */
-function getSixMonthLookback(): Date {
+function getLookbackDate(days: number): Date {
   const date = new Date();
-  date.setMonth(date.getMonth() - 6);
+  date.setDate(date.getDate() - days);
   return date;
 }
 
@@ -474,11 +532,12 @@ export async function fetchRepositoryIssues(
   token: string,
   repoString: string,
   teamMembers: string[],
+  lookbackDays: number,
   onProgress?: (message: string) => void,
   filter?: SearchFilter
 ): Promise<{ issues: Issue[]; comments: Comment[] }> {
   const { owner, repo } = parseRepo(repoString);
-  const lookbackDate = getSixMonthLookback();
+  const lookbackDate = getLookbackDate(lookbackDays);
   const allIssues: Issue[] = [];
   const allComments: Comment[] = [];
   
@@ -531,7 +590,7 @@ export async function fetchRepositoryIssues(
   }
 
   // Fetch CLOSED issues (with lookback)
-  onProgress?.(`Fetching closed issues from ${repoString} (6-month lookback)${labels ? ` with label: ${labels.join(', ')}` : ''}...`);
+  onProgress?.(`Fetching closed issues from ${repoString} (${lookbackDays}-day lookback)${labels ? ` with label: ${labels.join(', ')}` : ''}...`);
   cursor = null;
   hasMore = true;
 
@@ -584,66 +643,102 @@ export async function fetchRepositoryIssues(
 }
 
 /**
- * Fetch pull requests authored by team members
+ * Fetch activity for linked PRs by their node IDs (works for PRs in any repo)
  */
-export async function fetchTeamPullRequests(
+export async function fetchLinkedPRActivities(
   token: string,
-  repoString: string,
+  linkedPRs: LinkedPR[],
   teamMembers: string[],
   onProgress?: (message: string) => void
-): Promise<PullRequest[]> {
-  const { owner, repo } = parseRepo(repoString);
-  const lookbackDate = getSixMonthLookback();
-  const allPRs: PullRequest[] = [];
-  let cursor: string | null = null;
-  let hasMore = true;
+): Promise<PRActivity[]> {
+  const allActivities: PRActivity[] = [];
+  const processedNodeIds = new Set<string>();
 
-  onProgress?.(`Fetching pull requests from ${repoString}...`);
+  onProgress?.(`Fetching activity for ${linkedPRs.length} linked PRs...`);
 
-  while (hasMore) {
-    const data: PRsQueryResponse = await graphqlRequest<PRsQueryResponse>(token, PRS_QUERY, {
-      owner,
-      repo,
-      after: cursor,
-    });
+  let processed = 0;
+  for (const linkedPR of linkedPRs) {
+    // Skip if we've already processed this PR
+    if (processedNodeIds.has(linkedPR.nodeId)) {
+      continue;
+    }
+    processedNodeIds.add(linkedPR.nodeId);
 
-    for (const pr of data.repository.pullRequests.nodes) {
-      // Only include PRs within lookback period
-      if (new Date(pr.createdAt) < lookbackDate) {
-        hasMore = false;
-        break;
+    try {
+      const data = await graphqlRequest<PRByIdResponse>(token, PR_BY_ID_QUERY, {
+        nodeId: linkedPR.nodeId,
+      });
+
+      if (!data.node) {
+        // PR might have been deleted or user doesn't have access
+        continue;
       }
 
-      // Only include PRs authored by team members
-      const author = pr.author?.login || 'ghost';
-      if (teamMembers.includes(author)) {
-        allPRs.push({
-          id: pr.databaseId,
-          nodeId: pr.id,
-          number: pr.number,
-          title: pr.title,
-          state: pr.state,
-          url: pr.url,
-          repository: repoString,
-          author,
-          createdAt: pr.createdAt,
-          updatedAt: pr.updatedAt,
-          closedAt: pr.closedAt,
-          mergedAt: pr.mergedAt,
-          lastSyncedAt: new Date().toISOString(),
-        });
+      const pr = data.node;
+      const repository = pr.repository.nameWithOwner;
+
+      // Extract commits by team members
+      for (const commitNode of pr.commits.nodes) {
+        const commitAuthor = commitNode.commit.author?.user?.login;
+        if (commitAuthor && teamMembers.includes(commitAuthor)) {
+          allActivities.push({
+            id: `commit_${commitNode.commit.oid}`,
+            prId: pr.databaseId,
+            prNumber: pr.number,
+            repository,
+            type: 'commit',
+            author: commitAuthor,
+            createdAt: commitNode.commit.committedDate,
+          });
+        }
       }
+
+      // Extract reviews by team members
+      for (const review of pr.reviews.nodes) {
+        const reviewAuthor = review.author?.login;
+        if (reviewAuthor && teamMembers.includes(reviewAuthor)) {
+          allActivities.push({
+            id: `review_${review.id}`,
+            prId: pr.databaseId,
+            prNumber: pr.number,
+            repository,
+            type: 'review',
+            author: reviewAuthor,
+            createdAt: review.createdAt,
+          });
+        }
+      }
+
+      // Extract review comments by team members
+      for (const thread of pr.reviewThreads.nodes) {
+        for (const comment of thread.comments.nodes) {
+          const commentAuthor = comment.author?.login;
+          if (commentAuthor && teamMembers.includes(commentAuthor)) {
+            allActivities.push({
+              id: `review_comment_${comment.id}`,
+              prId: pr.databaseId,
+              prNumber: pr.number,
+              repository,
+              type: 'review_comment',
+              author: commentAuthor,
+              createdAt: comment.createdAt,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      // Log but continue - some PRs may not be accessible
+      console.warn(`Failed to fetch PR ${linkedPR.nodeId}:`, error);
     }
 
-    if (hasMore) {
-      hasMore = data.repository.pullRequests.pageInfo.hasNextPage;
-      cursor = data.repository.pullRequests.pageInfo.endCursor;
+    processed++;
+    if (processed % 10 === 0) {
+      onProgress?.(`Fetched activity for ${processed}/${linkedPRs.length} linked PRs (${allActivities.length} activities)...`);
     }
-
-    onProgress?.(`Fetched ${allPRs.length} team PRs...`);
   }
 
-  return allPRs;
+  onProgress?.(`Completed: ${allActivities.length} PR activities from ${processedNodeIds.size} linked PRs`);
+  return allActivities;
 }
 
 /**
@@ -653,12 +748,18 @@ export async function syncAllRepositories(
   token: string,
   repositories: string[],
   teamMembers: string[],
+  lookbackDays: number,
   onProgress?: (message: string) => void,
   filter?: SearchFilter
 ): Promise<void> {
   await updateSyncStatus('global', { status: 'syncing', errorMessage: null });
 
   try {
+    // Collect all issues, comments, and linked PRs across all repos
+    const allIssues: Issue[] = [];
+    const allComments: Comment[] = [];
+    const allLinkedPRs: LinkedPR[] = [];
+
     for (const repo of repositories) {
       // Skip if repo filter is set and doesn't match
       if (filter?.repo && !repo.toLowerCase().includes(filter.repo)) {
@@ -674,17 +775,18 @@ export async function syncAllRepositories(
           token,
           repo,
           teamMembers,
+          lookbackDays,
           onProgress,
           filter
         );
 
-        // Fetch team PRs
-        const prs = await fetchTeamPullRequests(token, repo, teamMembers, onProgress);
+        allIssues.push(...issues);
+        allComments.push(...comments);
 
-        // Store in IndexedDB
-        await upsertIssues(issues);
-        await upsertComments(comments);
-        await upsertPullRequests(prs);
+        // Collect linked PRs from these issues
+        for (const issue of issues) {
+          allLinkedPRs.push(...issue.linkedPRs);
+        }
 
         await updateSyncStatus(repo, {
           status: 'idle',
@@ -693,12 +795,23 @@ export async function syncAllRepositories(
           commentsCount: comments.length,
         });
 
-        onProgress?.(`Completed sync for ${repo}: ${issues.length} issues, ${comments.length} comments, ${prs.length} PRs`);
+        onProgress?.(`Completed issues sync for ${repo}: ${issues.length} issues, ${comments.length} comments`);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         await updateSyncStatus(repo, { status: 'error', errorMessage });
         onProgress?.(`Error syncing ${repo}: ${errorMessage}`);
       }
+    }
+
+    // Store issues and comments
+    await upsertIssues(allIssues);
+    await upsertComments(allComments);
+
+    // Fetch activity for all linked PRs (handles cross-repo PRs)
+    if (allLinkedPRs.length > 0) {
+      const activities = await fetchLinkedPRActivities(token, allLinkedPRs, teamMembers, onProgress);
+      await upsertPRActivity(activities);
+      onProgress?.(`Stored ${activities.length} PR activities from ${allLinkedPRs.length} linked PRs`);
     }
 
     await updateSyncStatus('global', {

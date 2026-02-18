@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { MessageSquare, CheckCircle, GitPullRequest, AlertTriangle, ExternalLink, User, Clock, Target, HelpCircle, CircleDot } from 'lucide-react';
+import { MessageSquare, CheckCircle, GitPullRequest, AlertTriangle, ExternalLink, User, Clock, Target, HelpCircle, CircleDot, Activity, Calendar } from 'lucide-react';
 import { db, getTeamMemberStats, getMemberEngagedIssues, calculateAorExpertise, getBatchIssueStatus, type Issue, type IssueStatus } from '../db';
 import { getSettings, type AreaOfResponsibility } from './Settings';
+import { useTeamEngagement, type TeamMemberEngagement } from '../hooks/useEngagementCalculator';
 
 interface TeamMemberStats {
   username: string;
@@ -12,9 +13,13 @@ interface TeamMemberStats {
   openIssuesCount: number;
   stalledIssuesCount: number;
   awaitingReplyCount: number;
+  // Effort tracking metrics
+  totalActiveDays: number;
+  commDays: number;
+  devDays: number;
 }
 
-type DetailTab = 'stalled' | 'engaged' | 'prs' | 'expertise';
+type DetailTab = 'stalled' | 'engaged' | 'prs' | 'expertise' | 'effort';
 
 interface AorExpertiseData {
   aor: AreaOfResponsibility;
@@ -35,8 +40,16 @@ export function TeamView() {
   const [selectedMember, setSelectedMember] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>('stalled');
   const [expandedAor, setExpandedAor] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<'comments' | 'issuesClosed' | 'linkedPRsCount' | 'engagedIssuesCount' | 'openIssuesCount' | 'stalledIssuesCount'>('comments');
+  const [sortBy, setSortBy] = useState<'comments' | 'issuesClosed' | 'linkedPRsCount' | 'engagedIssuesCount' | 'openIssuesCount' | 'stalledIssuesCount' | 'totalActiveDays'>('totalActiveDays');
   const [lookbackDays, setLookbackDays] = useState(180);
+
+  // Get settings for team engagement
+  const settings = getSettings();
+  const teamMembers = settings.teamMembers;
+  const aors = settings.aors;
+  
+  // Use the engagement calculator hook
+  const teamEngagement = useTeamEngagement(teamMembers, aors);
 
   useEffect(() => {
     loadTeamStats();
@@ -112,7 +125,7 @@ export function TeamView() {
       setSelectedMember(null);
     } else {
       setSelectedMember(username);
-      setDetailTab('stalled'); // Reset to stalled tab when selecting new member
+      setDetailTab('effort'); // Default to effort tab when selecting new member
       setExpandedAor(null);
     }
   };
@@ -236,7 +249,7 @@ export function TeamView() {
       
       setMemberStalledIssues(memberStalled);
 
-      // Combine into stats array
+      // Combine into stats array (engagement metrics will be added from hook)
       const combinedStats: TeamMemberStats[] = teamMembers.map((username) => {
         const memberData = memberStats.get(username) || { comments: 0, issuesClosed: 0, linkedPRsCount: 0 };
         return {
@@ -246,6 +259,10 @@ export function TeamView() {
           openIssuesCount: memberOpenIssues.get(username) || 0,
           stalledIssuesCount: memberStalled.get(username)?.length || 0,
           awaitingReplyCount: memberAwaiting.get(username) || 0,
+          // Initialize with 0, will be updated from teamEngagement hook
+          totalActiveDays: 0,
+          commDays: 0,
+          devDays: 0,
         };
       });
 
@@ -257,7 +274,18 @@ export function TeamView() {
     }
   };
 
-  const sortedStats = [...stats].sort((a, b) => b[sortBy] - a[sortBy]);
+  // Merge engagement data from hook with stats
+  const statsWithEngagement = stats.map(member => {
+    const engagement = teamEngagement.get(member.username);
+    return {
+      ...member,
+      totalActiveDays: engagement?.totalActiveDays || 0,
+      commDays: engagement?.commDays || 0,
+      devDays: engagement?.devDays || 0,
+    };
+  });
+
+  const sortedStats = [...statsWithEngagement].sort((a, b) => b[sortBy] - a[sortBy]);
 
   const getStatColor = (value: number, type: 'good' | 'warning') => {
     if (type === 'warning') {
@@ -304,8 +332,9 @@ export function TeamView() {
       {/* Sort Controls */}
       <div className="flex items-center gap-4">
         <span className="text-sm text-gray-400">Sort by:</span>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {[
+            { key: 'totalActiveDays', label: 'Active Days', icon: Calendar },
             { key: 'comments', label: 'Comments', icon: MessageSquare },
             { key: 'issuesClosed', label: 'Closer', icon: CheckCircle },
             { key: 'linkedPRsCount', label: 'Linked PRs', icon: GitPullRequest },
@@ -330,43 +359,43 @@ export function TeamView() {
       </div>
 
       {/* Leaderboard */}
-      <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+      <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-800">
-              <th className="text-left px-6 py-4 text-sm font-medium text-gray-400">Rank</th>
-              <th className="text-left px-6 py-4 text-sm font-medium text-gray-400">Team Member</th>
-              <th className="text-center px-6 py-4 text-sm font-medium text-gray-400">
+              <th className="text-left px-4 py-4 text-sm font-medium text-gray-400">Rank</th>
+              <th className="text-left px-4 py-4 text-sm font-medium text-gray-400">Team Member</th>
+              <th className="text-center px-4 py-4 text-sm font-medium text-gray-400">
+                <div className="flex items-center justify-center gap-2">
+                  <Calendar size={14} />
+                  Active Days
+                </div>
+              </th>
+              <th className="text-center px-4 py-4 text-sm font-medium text-gray-400 min-w-[160px]">
+                <div className="flex items-center justify-center gap-2">
+                  <Activity size={14} />
+                  Work Split
+                </div>
+              </th>
+              <th className="text-center px-4 py-4 text-sm font-medium text-gray-400">
                 <div className="flex items-center justify-center gap-2">
                   <MessageSquare size={14} />
                   Comments
                 </div>
               </th>
-              <th className="text-center px-6 py-4 text-sm font-medium text-gray-400">
+              <th className="text-center px-4 py-4 text-sm font-medium text-gray-400">
                 <div className="flex items-center justify-center gap-2">
                   <CheckCircle size={14} />
                   Closer
                 </div>
               </th>
-              <th className="text-center px-6 py-4 text-sm font-medium text-gray-400">
-                <div className="flex items-center justify-center gap-2">
-                  <GitPullRequest size={14} />
-                  Linked PRs
-                </div>
-              </th>
-              <th className="text-center px-6 py-4 text-sm font-medium text-gray-400">
-                <div className="flex items-center justify-center gap-2">
-                  <MessageSquare size={14} />
-                  Engaged
-                </div>
-              </th>
-              <th className="text-center px-6 py-4 text-sm font-medium text-gray-400">
+              <th className="text-center px-4 py-4 text-sm font-medium text-gray-400">
                 <div className="flex items-center justify-center gap-2">
                   <CircleDot size={14} />
                   Open
                 </div>
               </th>
-              <th className="text-center px-6 py-4 text-sm font-medium text-gray-400">
+              <th className="text-center px-4 py-4 text-sm font-medium text-gray-400">
                 <div className="flex items-center justify-center gap-2">
                   <AlertTriangle size={14} />
                   Stalled
@@ -375,69 +404,90 @@ export function TeamView() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
-            {sortedStats.map((member, index) => (
-              <tr
-                key={member.username}
-                className={`hover:bg-gray-800/50 transition-colors cursor-pointer ${
-                  selectedMember === member.username ? 'bg-gray-800' : ''
-                }`}
-                onClick={() => handleMemberClick(member.username)}
-              >
-                <td className="px-6 py-4">
-                  <span
-                    className={`text-lg font-bold ${
-                      index === 0
-                        ? 'text-yellow-400'
-                        : index === 1
-                        ? 'text-gray-300'
-                        : index === 2
-                        ? 'text-amber-600'
-                        : 'text-gray-500'
-                    }`}
-                  >
-                    #{index + 1}
-                  </span>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center">
-                      <User size={16} className="text-gray-400" />
+            {sortedStats.map((member, index) => {
+              const totalDays = member.commDays + member.devDays;
+              const commPercent = totalDays > 0 ? (member.commDays / totalDays) * 100 : 50;
+              
+              return (
+                <tr
+                  key={member.username}
+                  className={`hover:bg-gray-800/50 transition-colors cursor-pointer ${
+                    selectedMember === member.username ? 'bg-gray-800' : ''
+                  }`}
+                  onClick={() => handleMemberClick(member.username)}
+                >
+                  <td className="px-4 py-4">
+                    <span
+                      className={`text-lg font-bold ${
+                        index === 0
+                          ? 'text-yellow-400'
+                          : index === 1
+                          ? 'text-gray-300'
+                          : index === 2
+                          ? 'text-amber-600'
+                          : 'text-gray-500'
+                      }`}
+                    >
+                      #{index + 1}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center">
+                        <User size={16} className="text-gray-400" />
+                      </div>
+                      <span className="text-white font-medium">@{member.username}</span>
                     </div>
-                    <span className="text-white font-medium">@{member.username}</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4 text-center">
-                  <span className={`text-lg font-semibold ${getStatColor(member.comments, 'good')}`}>
-                    {member.comments}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-center">
-                  <span className={`text-lg font-semibold ${getStatColor(member.issuesClosed, 'good')}`}>
-                    {member.issuesClosed}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-center">
-                  <span className={`text-lg font-semibold ${getStatColor(member.linkedPRsCount, 'good')}`}>
-                    {member.linkedPRsCount}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-center">
-                  <span className={`text-lg font-semibold ${getStatColor(member.engagedIssuesCount, 'good')}`}>
-                    {member.engagedIssuesCount}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-center">
-                  <span className={`text-lg font-semibold ${getStatColor(member.openIssuesCount, 'good')}`}>
-                    {member.openIssuesCount}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-center">
-                  <span className={`text-lg font-semibold ${getStatColor(member.stalledIssuesCount, 'warning')}`}>
-                    {member.stalledIssuesCount}
-                  </span>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <span className={`text-lg font-semibold ${getStatColor(member.totalActiveDays, 'good')}`}>
+                      {member.totalActiveDays}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4">
+                    {/* Work Type Split Progress Bar */}
+                    <div className="flex flex-col gap-1">
+                      <div className="flex justify-between text-xs text-gray-500">
+                        <span>{member.commDays}d Comm</span>
+                        <span>{member.devDays}d Dev</span>
+                      </div>
+                      <div className="h-2 bg-gray-700 rounded-full overflow-hidden flex">
+                        <div
+                          className="bg-blue-500 h-full transition-all"
+                          style={{ width: `${commPercent}%` }}
+                          title={`Communication: ${member.commDays} days`}
+                        />
+                        <div
+                          className="bg-green-500 h-full transition-all"
+                          style={{ width: `${100 - commPercent}%` }}
+                          title={`Development: ${member.devDays} days`}
+                        />
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <span className={`text-lg font-semibold ${getStatColor(member.comments, 'good')}`}>
+                      {member.comments}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <span className={`text-lg font-semibold ${getStatColor(member.issuesClosed, 'good')}`}>
+                      {member.issuesClosed}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <span className={`text-lg font-semibold ${getStatColor(member.openIssuesCount, 'good')}`}>
+                      {member.openIssuesCount}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <span className={`text-lg font-semibold ${getStatColor(member.stalledIssuesCount, 'warning')}`}>
+                      {member.stalledIssuesCount}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -446,10 +496,21 @@ export function TeamView() {
       {selectedMember && (
         <div className="bg-gray-900 rounded-lg border border-gray-800">
           {/* Tabs */}
-          <div className="flex border-b border-gray-800">
+          <div className="flex border-b border-gray-800 overflow-x-auto">
+            <button
+              onClick={() => setDetailTab('effort')}
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
+                detailTab === 'effort'
+                  ? 'text-white border-b-2 border-cyan-500 bg-gray-800'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <Activity size={16} />
+              Effort Summary
+            </button>
             <button
               onClick={() => setDetailTab('stalled')}
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
                 detailTab === 'stalled'
                   ? 'text-white border-b-2 border-amber-500 bg-gray-800'
                   : 'text-gray-400 hover:text-white'
@@ -460,7 +521,7 @@ export function TeamView() {
             </button>
             <button
               onClick={() => setDetailTab('engaged')}
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
                 detailTab === 'engaged'
                   ? 'text-white border-b-2 border-indigo-500 bg-gray-800'
                   : 'text-gray-400 hover:text-white'
@@ -471,7 +532,7 @@ export function TeamView() {
             </button>
             <button
               onClick={() => setDetailTab('prs')}
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
                 detailTab === 'prs'
                   ? 'text-white border-b-2 border-purple-500 bg-gray-800'
                   : 'text-gray-400 hover:text-white'
@@ -482,7 +543,7 @@ export function TeamView() {
             </button>
             <button
               onClick={() => setDetailTab('expertise')}
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
                 detailTab === 'expertise'
                   ? 'text-white border-b-2 border-green-500 bg-gray-800'
                   : 'text-gray-400 hover:text-white'
@@ -494,6 +555,13 @@ export function TeamView() {
           </div>
 
           {/* Tab Content */}
+          {detailTab === 'effort' && (
+            <EffortSummaryTab 
+              member={selectedMember} 
+              engagement={teamEngagement.get(selectedMember)} 
+            />
+          )}
+
           {detailTab === 'stalled' && (
             <>
               {(memberStalledIssues.get(selectedMember)?.length || 0) > 0 ? (
@@ -683,6 +751,145 @@ function IssueRow({ issue, status, showPRs, selectedMember }: IssueRowProps) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Effort Summary Tab Component
+interface EffortSummaryTabProps {
+  member: string;
+  engagement: TeamMemberEngagement | undefined;
+}
+
+function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
+  if (!engagement) {
+    return (
+      <div className="p-8 text-center text-gray-500">
+        Loading effort data...
+      </div>
+    );
+  }
+
+  const totalDays = engagement.commDays + engagement.devDays;
+  const commPercent = totalDays > 0 ? (engagement.commDays / totalDays) * 100 : 50;
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Summary Cards */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+          <div className="flex items-center gap-2 text-gray-400 mb-2">
+            <Calendar size={16} />
+            <span className="text-sm">Total Active Days</span>
+          </div>
+          <div className="text-3xl font-bold text-cyan-400">
+            {engagement.totalActiveDays}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            Unique days with any activity
+          </div>
+        </div>
+
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+          <div className="flex items-center gap-2 text-gray-400 mb-2">
+            <MessageSquare size={16} />
+            <span className="text-sm">Communication Days</span>
+          </div>
+          <div className="text-3xl font-bold text-blue-400">
+            {engagement.commDays}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            Days with issue comments
+          </div>
+        </div>
+
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+          <div className="flex items-center gap-2 text-gray-400 mb-2">
+            <GitPullRequest size={16} />
+            <span className="text-sm">Development Days</span>
+          </div>
+          <div className="text-3xl font-bold text-green-400">
+            {engagement.devDays}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            Days with PR activity
+          </div>
+        </div>
+      </div>
+
+      {/* Work Type Split */}
+      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+        <h4 className="text-white font-medium mb-3">Work Type Distribution</h4>
+        <div className="mb-2">
+          <div className="flex justify-between text-sm text-gray-400 mb-1">
+            <span className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-blue-500 rounded" />
+              Communication ({engagement.commDays} days)
+            </span>
+            <span className="flex items-center gap-2">
+              Development ({engagement.devDays} days)
+              <div className="w-3 h-3 bg-green-500 rounded" />
+            </span>
+          </div>
+          <div className="h-4 bg-gray-700 rounded-full overflow-hidden flex">
+            <div
+              className="bg-blue-500 h-full transition-all"
+              style={{ width: `${commPercent}%` }}
+            />
+            <div
+              className="bg-green-500 h-full transition-all"
+              style={{ width: `${100 - commPercent}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>{Math.round(commPercent)}%</span>
+            <span>{Math.round(100 - commPercent)}%</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Top AoRs */}
+      {engagement.topAors.length > 0 && (
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+          <h4 className="text-white font-medium mb-3">Top Areas of Responsibility</h4>
+          <div className="space-y-2">
+            {engagement.topAors.map((aor, index) => (
+              <div key={aor.aorId} className="flex items-center gap-3">
+                <span className={`text-lg font-bold ${
+                  index === 0 ? 'text-yellow-400' :
+                  index === 1 ? 'text-gray-300' :
+                  'text-amber-600'
+                }`}>
+                  #{index + 1}
+                </span>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-white">{aor.aorName}</span>
+                    <span className="text-purple-400 font-semibold">{aor.activityDays} days</span>
+                  </div>
+                  <div className="h-1.5 bg-gray-700 rounded-full mt-1 overflow-hidden">
+                    <div
+                      className="h-full bg-purple-500 rounded-full"
+                      style={{ 
+                        width: `${engagement.topAors[0].activityDays > 0 
+                          ? (aor.activityDays / engagement.topAors[0].activityDays) * 100 
+                          : 0}%` 
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Context Switch Info */}
+      <div className="text-xs text-gray-500 p-3 bg-gray-800/50 rounded-lg border border-gray-700/50">
+        <strong>Context Switch Factor:</strong> When a team member works on multiple issues in a single day, 
+        each issue receives a fractional "Day Credit" (1/N where N = number of issues that day) to reflect 
+        fragmented focus. This helps identify both breadth of coverage and depth of engagement.
       </div>
     </div>
   );

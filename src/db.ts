@@ -70,6 +70,16 @@ export interface PullRequest {
   lastSyncedAt: string;
 }
 
+export interface PRActivity {
+  id: string;
+  prId: number;
+  prNumber: number;
+  repository: string;
+  type: 'commit' | 'review' | 'review_comment';
+  author: string;
+  createdAt: string;
+}
+
 export interface SyncStatus {
   id: string; // 'global' or repository name
   lastFullSync: string | null;
@@ -88,16 +98,18 @@ class VantageDB extends Dexie {
   issues!: EntityTable<Issue, 'id'>;
   comments!: EntityTable<Comment, 'id'>;
   pullRequests!: EntityTable<PullRequest, 'id'>;
+  prActivity!: EntityTable<PRActivity, 'id'>;
   syncStatus!: EntityTable<SyncStatus, 'id'>;
 
   constructor() {
     super('VantageDB');
 
-    this.version(1).stores({
+    this.version(2).stores({
       // Primary key and indexed fields
       issues: 'id, nodeId, number, state, repository, author, createdAt, updatedAt, closedAt, lastTeamComment, *assignees, *labels.name',
       comments: 'id, nodeId, issueId, author, createdAt, repository',
       pullRequests: 'id, nodeId, number, state, repository, author, createdAt, mergedAt',
+      prActivity: 'id, prId, prNumber, repository, type, author, createdAt',
       syncStatus: 'id',
     });
   }
@@ -113,10 +125,11 @@ export const db = new VantageDB();
  * Clear all data from the database
  */
 export async function clearAllData(): Promise<void> {
-  await db.transaction('rw', [db.issues, db.comments, db.pullRequests, db.syncStatus], async () => {
+  await db.transaction('rw', [db.issues, db.comments, db.pullRequests, db.prActivity, db.syncStatus], async () => {
     await db.issues.clear();
     await db.comments.clear();
     await db.pullRequests.clear();
+    await db.prActivity.clear();
     await db.syncStatus.clear();
   });
 }
@@ -569,6 +582,13 @@ export async function upsertComments(comments: Comment[]): Promise<void> {
  */
 export async function upsertPullRequests(prs: PullRequest[]): Promise<void> {
   await db.pullRequests.bulkPut(prs);
+}
+
+/**
+ * Bulk upsert PR activity
+ */
+export async function upsertPRActivity(activities: PRActivity[]): Promise<void> {
+  await db.prActivity.bulkPut(activities);
 }
 
 export default db;

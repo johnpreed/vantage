@@ -1,8 +1,9 @@
 import { useMemo, useState, useEffect } from 'react';
-import { ExternalLink, GitPullRequest, Tag, MessageSquare, Users, Clock, HelpCircle } from 'lucide-react';
+import { ExternalLink, GitPullRequest, Tag, MessageSquare, Users, Clock, HelpCircle, Activity } from 'lucide-react';
 import { db, type Issue, getBatchIssueEngagedMembers, getBatchCommentCounts, getBatchIssueStatus, type IssueStatus } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { getSettings } from './Settings';
+import { useBatchIssueEffort } from '../hooks/useEngagementCalculator';
 
 export function OpenIssuesView() {
   // Live query only OPEN issues
@@ -18,6 +19,16 @@ export function OpenIssuesView() {
       (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
     );
   }, [allIssues]);
+
+  // Get team members for effort calculation
+  const settings = getSettings();
+  const teamMembers = settings.teamMembers;
+  
+  // Get issue IDs for batch effort calculation
+  const issueIds = useMemo(() => sortedIssues.map(i => i.id), [sortedIssues]);
+  
+  // Calculate effort for all issues
+  const effortMap = useBatchIssueEffort(issueIds, teamMembers);
 
   // Load engaged team members for all issues
   useEffect(() => {
@@ -92,6 +103,7 @@ export function OpenIssuesView() {
             engagedMembers={engagedMembersMap.get(issue.id) || []}
             commentCount={commentCountsMap.get(issue.id) || 0}
             status={issueStatusMap.get(issue.id)}
+            effort={effortMap.get(issue.id)}
           />
         ))}
       </div>
@@ -105,9 +117,10 @@ interface IssueCardProps {
   engagedMembers: string[];
   commentCount: number;
   status?: IssueStatus;
+  effort?: { commDays: number; devDays: number };
 }
 
-function IssueCard({ issue, formatDate, engagedMembers, commentCount, status }: IssueCardProps) {
+function IssueCard({ issue, formatDate, engagedMembers, commentCount, status, effort }: IssueCardProps) {
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-800 p-4 hover:border-gray-700 transition-colors">
       <div className="flex items-start justify-between gap-4">
@@ -190,6 +203,15 @@ function IssueCard({ issue, formatDate, engagedMembers, commentCount, status }: 
 
         {/* Right Side Stats */}
         <div className="flex flex-col items-end gap-2 text-gray-400">
+          {/* Effort Badge */}
+          {effort && (effort.commDays > 0 || effort.devDays > 0) && (
+            <div className="flex items-center gap-1 text-xs px-2 py-1 bg-indigo-900/30 rounded-md border border-indigo-700/50">
+              <Activity size={12} className="text-indigo-400" />
+              <span className="text-indigo-300">
+                {effort.commDays}d Comm | {effort.devDays}d Dev
+              </span>
+            </div>
+          )}
           {issue.linkedPRs.length > 0 && (
             <div className="flex items-center gap-1 text-sm">
               <GitPullRequest size={14} />
