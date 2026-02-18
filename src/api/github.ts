@@ -849,3 +849,118 @@ export async function verifyToken(token: string): Promise<{ valid: boolean; logi
     };
   }
 }
+
+/**
+ * Discussion category info for creating discussions
+ */
+export interface DiscussionCategory {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+const REPO_DISCUSSION_CATEGORIES_QUERY = `
+  query($owner: String!, $name: String!) {
+    repository(owner: $owner, name: $name) {
+      id
+      discussionCategories(first: 20) {
+        nodes {
+          id
+          name
+          slug
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Fetch repository ID and discussion categories
+ */
+export async function fetchDiscussionCategories(
+  token: string,
+  repo: string
+): Promise<{ repositoryId: string; categories: DiscussionCategory[] }> {
+  const [owner, name] = repo.split('/');
+  
+  const response = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query: REPO_DISCUSSION_CATEGORIES_QUERY,
+      variables: { owner, name },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+  }
+
+  const json = await response.json();
+  if (json.errors) {
+    throw new Error(`GraphQL error: ${json.errors[0].message}`);
+  }
+
+  const repository = json.data.repository;
+  if (!repository) {
+    throw new Error(`Repository not found: ${repo}`);
+  }
+
+  return {
+    repositoryId: repository.id,
+    categories: repository.discussionCategories.nodes,
+  };
+}
+
+const CREATE_DISCUSSION_MUTATION = `
+  mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+    createDiscussion(input: {repositoryId: $repositoryId, categoryId: $categoryId, title: $title, body: $body}) {
+      discussion {
+        id
+        url
+        number
+      }
+    }
+  }
+`;
+
+/**
+ * Create a new discussion in a repository
+ */
+export async function createDiscussion(
+  token: string,
+  repositoryId: string,
+  categoryId: string,
+  title: string,
+  body: string
+): Promise<{ url: string; number: number }> {
+  const response = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query: CREATE_DISCUSSION_MUTATION,
+      variables: { repositoryId, categoryId, title, body },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+  }
+
+  const json = await response.json();
+  if (json.errors) {
+    throw new Error(`GraphQL error: ${json.errors[0].message}`);
+  }
+
+  const discussion = json.data.createDiscussion.discussion;
+  return {
+    url: discussion.url,
+    number: discussion.number,
+  };
+}
