@@ -17,6 +17,8 @@ interface TeamMemberStats {
   totalActiveDays: number;
   commDays: number;
   devDays: number;
+  authorDays: number;    // Unique days with commits on PRs user authored
+  reviewerDays: number;  // Unique days with reviews on others' PRs
 }
 
 type DetailTab = 'stalled' | 'engaged' | 'prs' | 'expertise' | 'effort';
@@ -263,6 +265,8 @@ export function TeamView() {
           totalActiveDays: 0,
           commDays: 0,
           devDays: 0,
+          authorDays: 0,
+          reviewerDays: 0,
         };
       });
 
@@ -282,6 +286,8 @@ export function TeamView() {
       totalActiveDays: engagement?.totalActiveDays || 0,
       commDays: engagement?.commDays || 0,
       devDays: engagement?.devDays || 0,
+      authorDays: engagement?.authorDays || 0,
+      reviewerDays: engagement?.reviewerDays || 0,
     };
   });
 
@@ -405,8 +411,11 @@ export function TeamView() {
           </thead>
           <tbody className="divide-y divide-gray-800">
             {sortedStats.map((member, index) => {
-              const totalDays = member.commDays + member.devDays;
-              const commPercent = totalDays > 0 ? (member.commDays / totalDays) * 100 : 50;
+              // Calculate 3-way percentages for Comm/Author/Review
+              const totalDays = member.commDays + member.authorDays + member.reviewerDays;
+              const commPercent = totalDays > 0 ? (member.commDays / totalDays) * 100 : 33.33;
+              const authorPercent = totalDays > 0 ? (member.authorDays / totalDays) * 100 : 33.33;
+              const reviewerPercent = totalDays > 0 ? (member.reviewerDays / totalDays) * 100 : 33.34;
               
               return (
                 <tr
@@ -445,11 +454,12 @@ export function TeamView() {
                     </span>
                   </td>
                   <td className="px-4 py-4">
-                    {/* Work Type Split Progress Bar */}
+                    {/* Work Type Split Progress Bar - 3 segments */}
                     <div className="flex flex-col gap-1">
                       <div className="flex justify-between text-xs text-gray-500">
-                        <span>{member.commDays}d Comm</span>
-                        <span>{member.devDays}d Dev</span>
+                        <span>{member.commDays}d C</span>
+                        <span>{member.authorDays}d A</span>
+                        <span>{member.reviewerDays}d R</span>
                       </div>
                       <div className="h-2 bg-gray-700 rounded-full overflow-hidden flex">
                         <div
@@ -459,8 +469,13 @@ export function TeamView() {
                         />
                         <div
                           className="bg-green-500 h-full transition-all"
-                          style={{ width: `${100 - commPercent}%` }}
-                          title={`Development: ${member.devDays} days`}
+                          style={{ width: `${authorPercent}%` }}
+                          title={`Authoring: ${member.authorDays} days`}
+                        />
+                        <div
+                          className="bg-amber-500 h-full transition-all"
+                          style={{ width: `${reviewerPercent}%` }}
+                          title={`Reviewing: ${member.reviewerDays} days`}
                         />
                       </div>
                     </div>
@@ -797,8 +812,10 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
     );
   }
 
-  const totalDays = engagement.commDays + engagement.devDays;
-  const commPercent = totalDays > 0 ? (engagement.commDays / totalDays) * 100 : 50;
+  const totalWorkDays = engagement.commDays + engagement.authorDays + engagement.reviewerDays;
+  const commPercent = totalWorkDays > 0 ? (engagement.commDays / totalWorkDays) * 100 : 33.33;
+  const authorPercent = totalWorkDays > 0 ? (engagement.authorDays / totalWorkDays) * 100 : 33.33;
+  const reviewerPercent = totalWorkDays > 0 ? (engagement.reviewerDays / totalWorkDays) * 100 : 33.34;
 
   // Sort issues by total activity (commDays + devDays) descending
   const sortedIssueEngagements = Array.from(engagement.issueEngagements.entries())
@@ -807,7 +824,7 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
   return (
     <div className="p-6 space-y-6">
       {/* Summary Cards */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-4 gap-4">
         <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-2">
             <Calendar size={16} />
@@ -824,7 +841,7 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
         <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-2">
             <MessageSquare size={16} />
-            <span className="text-sm">Communication Days</span>
+            <span className="text-sm">Communication</span>
           </div>
           <div className="text-3xl font-bold text-blue-400">
             {engagement.commDays}
@@ -837,29 +854,46 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
         <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-2">
             <GitPullRequest size={16} />
-            <span className="text-sm">Development Days</span>
+            <span className="text-sm">Authoring</span>
           </div>
           <div className="text-3xl font-bold text-green-400">
-            {engagement.devDays}
+            {engagement.authorDays}
           </div>
           <div className="text-xs text-gray-500 mt-1">
-            Days with PR activity
+            Days pushing to own PRs
+          </div>
+        </div>
+
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+          <div className="flex items-center gap-2 text-gray-400 mb-2">
+            <CheckCircle size={16} />
+            <span className="text-sm">Reviewing</span>
+          </div>
+          <div className="text-3xl font-bold text-amber-400">
+            {engagement.reviewerDays}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            Days reviewing others' PRs
           </div>
         </div>
       </div>
 
-      {/* Work Type Split */}
+      {/* Work Type Split - 3 segments */}
       <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
         <h4 className="text-white font-medium mb-3">Work Type Distribution</h4>
         <div className="mb-2">
           <div className="flex justify-between text-sm text-gray-400 mb-1">
             <span className="flex items-center gap-2">
               <div className="w-3 h-3 bg-blue-500 rounded" />
-              Communication ({engagement.commDays} days)
+              Comm ({engagement.commDays}d)
             </span>
             <span className="flex items-center gap-2">
-              Development ({engagement.devDays} days)
               <div className="w-3 h-3 bg-green-500 rounded" />
+              Author ({engagement.authorDays}d)
+            </span>
+            <span className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-amber-500 rounded" />
+              Review ({engagement.reviewerDays}d)
             </span>
           </div>
           <div className="h-4 bg-gray-700 rounded-full overflow-hidden flex">
@@ -869,12 +903,17 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
             />
             <div
               className="bg-green-500 h-full transition-all"
-              style={{ width: `${100 - commPercent}%` }}
+              style={{ width: `${authorPercent}%` }}
+            />
+            <div
+              className="bg-amber-500 h-full transition-all"
+              style={{ width: `${reviewerPercent}%` }}
             />
           </div>
           <div className="flex justify-between text-xs text-gray-500 mt-1">
             <span>{Math.round(commPercent)}%</span>
-            <span>{Math.round(100 - commPercent)}%</span>
+            <span>{Math.round(authorPercent)}%</span>
+            <span>{Math.round(reviewerPercent)}%</span>
           </div>
         </div>
       </div>
@@ -925,13 +964,16 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
                         {issue?.title || `Issue #${issueId}`}
                       </div>
                     </div>
-                    {/* Summary badges */}
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className="px-2 py-0.5 rounded text-xs bg-blue-900/50 text-blue-400 border border-blue-800">
-                        {issueEngagement.commDays}d / {issueEngagement.totalComments}c
+                    {/* Summary badges - Comm / Author / Review */}
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <span className="px-1.5 py-0.5 rounded text-xs bg-blue-900/50 text-blue-400 border border-blue-800">
+                        {issueEngagement.commDays}d C
                       </span>
-                      <span className="px-2 py-0.5 rounded text-xs bg-green-900/50 text-green-400 border border-green-800">
-                        {issueEngagement.devDays}d / {issueEngagement.totalPRActivities}pr
+                      <span className="px-1.5 py-0.5 rounded text-xs bg-green-900/50 text-green-400 border border-green-800">
+                        {issueEngagement.authorDays}d A
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded text-xs bg-amber-900/50 text-amber-400 border border-amber-800">
+                        {issueEngagement.reviewerDays}d R
                       </span>
                     </div>
                   </button>
@@ -940,12 +982,15 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
                   {isExpanded && issueEngagement.activityDetails.length > 0 && (
                     <div className="border-t border-gray-600 px-3 py-2 bg-gray-800/50">
                       <div className="text-xs text-gray-400 mb-2 flex items-center gap-4">
-                        <span>Date</span>
-                        <span className="flex items-center gap-1">
-                          <div className="w-2 h-2 bg-blue-500 rounded" /> Comments
+                        <span className="w-24">Date</span>
+                        <span className="flex items-center gap-1 w-16">
+                          <div className="w-2 h-2 bg-blue-500 rounded" /> Comm
                         </span>
-                        <span className="flex items-center gap-1">
-                          <div className="w-2 h-2 bg-green-500 rounded" /> PR Activities
+                        <span className="flex items-center gap-1 w-16">
+                          <div className="w-2 h-2 bg-green-500 rounded" /> Author
+                        </span>
+                        <span className="flex items-center gap-1 w-16">
+                          <div className="w-2 h-2 bg-amber-500 rounded" /> Review
                         </span>
                       </div>
                       <div className="space-y-1">
@@ -957,16 +1002,22 @@ function EffortSummaryTab({ engagement }: EffortSummaryTabProps) {
                             <span className="text-gray-300 font-mono text-xs w-24">
                               {detail.date}
                             </span>
-                            <div className="flex items-center gap-1 w-20">
+                            <div className="flex items-center gap-1 w-16">
                               <MessageSquare size={12} className="text-blue-400" />
                               <span className={detail.commentCount > 0 ? 'text-blue-400' : 'text-gray-600'}>
                                 {detail.commentCount}
                               </span>
                             </div>
-                            <div className="flex items-center gap-1 w-20">
+                            <div className="flex items-center gap-1 w-16">
                               <GitPullRequest size={12} className="text-green-400" />
-                              <span className={detail.prActivityCount > 0 ? 'text-green-400' : 'text-gray-600'}>
-                                {detail.prActivityCount}
+                              <span className={detail.authorActivityCount > 0 ? 'text-green-400' : 'text-gray-600'}>
+                                {detail.authorActivityCount}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1 w-16">
+                              <CheckCircle size={12} className="text-amber-400" />
+                              <span className={detail.reviewActivityCount > 0 ? 'text-amber-400' : 'text-gray-600'}>
+                                {detail.reviewActivityCount}
                               </span>
                             </div>
                           </div>
